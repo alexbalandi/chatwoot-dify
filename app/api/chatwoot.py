@@ -1,54 +1,54 @@
 import logging
 from typing import Any, Dict, List, Optional
 
-import httpx
+# No longer directly using httpx here, services handle their clients
+# import httpx
 
 from .. import config
+# Import the new service classes
+from app.services.chatwoot.message_service import MessageService
+from app.services.chatwoot.conversation_service import ConversationService
+from app.services.chatwoot.admin_service import AdminService
 
 logger = logging.getLogger(__name__)
-
 
 class ChatwootHandler:
     def __init__(
         self,
-        api_url: str | None = None,
-        api_key: str | None = None,
-        account_id: str | None = None,
-        admin_api_key: str | None = None,
+        api_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        account_id: Optional[str] = None,
+        admin_api_key: Optional[str] = None, # Added for completeness, passed to AdminService
     ):
-        self.api_url = api_url or config.CHATWOOT_API_URL
-        self.account_id = account_id or config.CHATWOOT_ACCOUNT_ID
-        self.api_key = api_key or config.CHATWOOT_API_KEY
-        self.admin_api_key = admin_api_key or config.CHATWOOT_ADMIN_API_KEY
-        self.headers = {
-            "api_access_token": self.api_key,
-            "Content-Type": "application/json",
-        }
-        self.admin_headers = {
-            "api_access_token": self.admin_api_key,
-            "Content-Type": "application/json",
-        }
-        # Base URLs
-        self.account_url = f"{self.api_url}/accounts/{self.account_id}"
-        self.conversations_url = f"{self.account_url}/conversations"
+        # Store config values to pass to services
+        # Services will use these to construct their own base URLs and headers
+        self.effective_api_url = api_url or config.CHATWOOT_API_URL
+        self.effective_account_id = account_id or config.CHATWOOT_ACCOUNT_ID
+        self.effective_api_key = api_key or config.CHATWOOT_API_KEY
+        self.effective_admin_api_key = admin_api_key or config.CHATWOOT_ADMIN_API_KEY
 
-    def send_message_sync(self, conversation_id: int, message: str, private: bool = False):
-        """Synchronous version of send_message for use in Celery tasks"""
-        import httpx
+        # Instantiate services
+        # Each service will inherit common configs from BaseChatwootService
+        self.message_service = MessageService(
+            api_url=self.effective_api_url,
+            account_id=self.effective_account_id,
+            api_key=self.effective_api_key
+        )
+        self.conversation_service = ConversationService(
+            api_url=self.effective_api_url,
+            account_id=self.effective_account_id,
+            api_key=self.effective_api_key,
+            admin_api_key=self.effective_admin_api_key # For get_conversation_data
+        )
+        self.admin_service = AdminService(
+            api_url=self.effective_api_url,
+            account_id=self.effective_account_id,
+            api_key=self.effective_api_key, # Standard API key for some admin actions if needed
+            admin_api_key=self.effective_admin_api_key # Specifically for admin-privileged actions
+        )
+        logger.info("ChatwootHandler initialized with all services.")
 
-        url = f"{self.conversations_url}/{conversation_id}/messages"
-
-        data = {
-            "content": message,
-            "message_type": "outgoing",
-            "private": private,
-        }
-
-        with httpx.Client() as client:
-            response = client.post(url, json=data, headers=self.headers, timeout=30.0)
-            response.raise_for_status()
-            return response.json()
-
+    # --- Message Methods ---
     async def send_message(
         self,
         conversation_id: int,
@@ -57,154 +57,134 @@ class ChatwootHandler:
         attachments: List[str] | None = None,
         content_attributes: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
-        """Send a message or private note to a conversation with rich content support"""
-        url = f"{self.conversations_url}/{conversation_id}/messages"
-        data = {
-            "content": message,
-            "message_type": "outgoing",
-            "private": private,
-            "content_attributes": content_attributes or {},
-        }
+        return await self.message_service.send_message(
+            conversation_id=conversation_id,
+            message=message,
+            private=private,
+            attachments=attachments,
+            content_attributes=content_attributes,
+        )
 
-        if attachments:
-            data["attachments"] = [{"url": url} for url in attachments]
+    def send_message_sync(self, conversation_id: int, message: str, private: bool = False) -> Dict[str, Any]:
+        return self.message_service.send_message_sync(
+            conversation_id=conversation_id, message=message, private=private
+        )
 
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(url, json=data, headers=self.headers)
-                response.raise_for_status()
-                return response.json()
-        except Exception as e:
-            logger.error(f"Failed to send message to conversation {conversation_id}: {e}")
-            raise
-
+    # --- Conversation Methods ---
     async def add_labels(self, conversation_id: int, labels: List[str]) -> Dict[str, Any]:
-        """Add labels to a conversation"""
-        url = f"{self.conversations_url}/{conversation_id}/labels"
-
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(url, json={"labels": labels}, headers=self.headers)
-                response.raise_for_status()
-                return response.json()
-        except Exception as e:
-            logger.error(f"Failed to add labels to conversation {conversation_id}: {e}")
-            raise
+        return await self.conversation_service.add_labels(conversation_id=conversation_id, labels=labels)
 
     async def get_conversation_data(self, conversation_id: int) -> Dict[str, Any]:
-        """Get conversation data including custom attributes and labels"""
-        url = f"{self.conversations_url}/{conversation_id}"
+        return await self.conversation_service.get_conversation_data(conversation_id=conversation_id)
 
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, headers=self.admin_headers)
-                response.raise_for_status()
-                return response.json()
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                f"Get conversation failed for {conversation_id}:\n"
-                f"URL: {url}\nStatus: {e.response.status_code}\n"
-                f"Response: {e.response.text}",
-                exc_info=True,
-            )
-            raise
-
-    async def assign_conversation(self, conversation_id: int, assignee_id: int) -> Dict[str, Any]:
-        """Assign a conversation to an agent."""
-        url = f"{self.conversations_url}/{conversation_id}/assignments"
-        data = {"assignee_id": assignee_id}
-
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(url, json=data, headers=self.headers)
-                response.raise_for_status()
-                return response.json()
-        except Exception as e:
-            logger.error(f"Failed to assign conversation {conversation_id} to agent {assignee_id}: {e}")
-            raise
+    async def assign_conversation(self, conversation_id: int, assignee_id: Optional[int] = None) -> Dict[str, Any]:
+        return await self.conversation_service.assign_conversation(
+            conversation_id=conversation_id, assignee_id=assignee_id
+        )
 
     async def patch_custom_attributes(self, conversation_id: int, custom_attributes: Dict[str, Any]) -> Dict[str, Any]:
-        """Update custom attributes for a conversation using PATCH method
+        return await self.conversation_service.patch_custom_attributes(
+            conversation_id=conversation_id, custom_attributes=custom_attributes
+        )
 
-        Unlike update_custom_attributes, this method doesn't merge with existing attributes,
-        but directly patches with the provided attributes.
-        """
-        custom_attrs_url = f"{self.conversations_url}/{conversation_id}/custom_attributes"
+    async def toggle_priority(self, conversation_id: int, priority: Optional[str]) -> Dict[str, Any]:
+        return await self.conversation_service.toggle_priority(conversation_id=conversation_id, priority=priority)
 
-        try:
-            async with httpx.AsyncClient() as client:
-                payload = {"custom_attributes": custom_attributes}
-
-                # Use PATCH instead of POST to update attributes
-                response = await client.patch(custom_attrs_url, json=payload, headers=self.headers)
-                response.raise_for_status()
-                # Check if response has content before trying to parse as JSON
-                if response.content and len(response.content.strip()) > 0:
-                    try:
-                        return response.json()
-                    except Exception as json_err:
-                        logger.warning(f"Failed to parse JSON response: {json_err}")
-                        return {}
-                return {}
-        except Exception as e:
-            logger.error(f"Failed to patch custom attributes for convo {conversation_id}: {e}")
-            raise
-
-    async def toggle_priority(self, conversation_id: int, priority: str) -> Dict[str, Any]:
-        """Toggle the priority of a conversation
-        Valid priorities: 'urgent', 'high', 'medium', 'low', None
-        """
-        url = f"{self.conversations_url}/{conversation_id}/toggle_priority"
-        data = {"priority": priority}
-
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(url, json=data, headers=self.headers)
-                response.raise_for_status()
-                if response.content and len(response.content.strip()) > 0:
-                    try:
-                        return response.json()
-                    except Exception as json_err:
-                        logger.warning(f"Failed to parse JSON response: {json_err}")
-                        return {}
-                return {}
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                f"Priority update failed for conversation {conversation_id}:\n"
-                f"URL: {url}\nStatus: {e.response.status_code}\n"
-                f"Response: {e.response.text}\nPriority: {priority}",
-                exc_info=True,
-            )
-            raise
-
-    async def assign_team(
-        self, conversation_id: int, team_id: int = 0, team_name: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Assign a conversation to a team.
-
-        Args:
-            conversation_id: The ID of the conversation to assign
-            team_id: The ID of the team to assign to
-            team_name: The name of the team to assign to (will be looked up if provided)
-        """
-        url = f"{self.conversations_url}/{conversation_id}/assignments"
-
-        # Use team name to get team_id if provided
-        if team_name and not team_id:
-            teams = await self.get_teams()
+    async def assign_team(self, conversation_id: int, team_id: Optional[int] = None, team_name: Optional[str] = None) -> Dict[str, Any]:
+        """Assign a conversation to a team. Looks up team_id by name if only name is provided."""
+        if team_name and team_id is None: # team_id takes precedence if both are somehow provided
+            teams = await self.admin_service.get_teams() # Use AdminService to get teams
             team_map = {team["name"].lower(): team["id"] for team in teams}
-            team_id = team_map.get(team_name.lower(), 0)
+            # Ensure team_name is not None before lower()
+            resolved_team_id = team_map.get(team_name.lower() if team_name else "", None)
+            if resolved_team_id is None:
+                logger.warning(f"Team '{team_name}' not found for assigning to conversation {conversation_id}.")
+                # Decide behavior: raise error or assign to None (unassign)?
+                # Original logic defaults team_id to 0 if not found, which might be an invalid ID.
+                # Let's be explicit: if team name is given but not found, either error or pass None to assign_team.
+                # Passing None to assign_team method of ConversationService should mean unassignment.
+                team_id_to_assign = None
+            else:
+                team_id_to_assign = resolved_team_id
+        else:
+            team_id_to_assign = team_id
 
-        data = {"team_id": team_id}
+        return await self.conversation_service.assign_team(
+            conversation_id=conversation_id, team_id=team_id_to_assign
+        )
 
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(url, json=data, headers=self.headers)
-                response.raise_for_status()
-                return response.json()
-        except Exception as e:
-            logger.error(f"Failed to assign conversation {conversation_id} to team {team_id or team_name}: {e}")
-            raise
+    async def toggle_status(
+        self,
+        conversation_id: int,
+        status: str,
+        previous_status: Optional[str] = None, # Facade needs this to decide on internal message
+        is_error_transition: bool = False,    # Facade needs this
+    ) -> Dict[str, Any]:
+        # The service method toggle_status now returns (response_json, should_send_notification_flag)
+        # However, I simplified the service to not return the flag. The facade will make this decision.
+        response_json = await self.conversation_service.toggle_status(
+            conversation_id=conversation_id, status=status
+        )
+        
+        # Logic for sending internal notification, now handled by the facade
+        if status == "open" and previous_status == "pending" and is_error_transition:
+            try:
+                logger.info(
+                    f"ChatwootHandler: Convo {conversation_id} changed from pending to "
+                    "open due to error, sending internal notification."
+                )
+                # Use MessageService for sending the notification
+                await self.message_service.send_message(
+                    conversation_id=conversation_id,
+                    message=config.BOT_ERROR_MESSAGE_INTERNAL,
+                    private=True,
+                )
+            except Exception as e_notify:
+                logger.error(
+                    f"ChatwootHandler: Failed to send 'pending to open internal error' "
+                    f"notification for convo {conversation_id}: {e_notify}",
+                    exc_info=True
+                )
+        return response_json # Return the main response from status toggle
+
+    def toggle_status_sync(
+        self,
+        conversation_id: int,
+        status: str,
+        previous_status: Optional[str] = None, # Facade needs this
+        is_error_transition: bool = False,    # Facade needs this
+    ) -> Dict[str, Any]:
+        response_json = self.conversation_service.toggle_status_sync(
+            conversation_id=conversation_id, status=status
+        )
+
+        if status == "open" and previous_status == "pending" and is_error_transition:
+            try:
+                logger.info(
+                    f"ChatwootHandler (sync): Convo {conversation_id} changed from pending to open due to error, "
+                    "sending internal notification."
+                )
+                self.message_service.send_message_sync(
+                    conversation_id=conversation_id,
+                    message=config.BOT_ERROR_MESSAGE_INTERNAL,
+                    private=True,
+                )
+            except Exception as e_notify:
+                logger.error(
+                    f"ChatwootHandler (sync): Failed to send 'pending to open internal error' notification "
+                    f"for convo {conversation_id}: {e_notify}",
+                    exc_info=True
+                )
+        return response_json
+
+    async def get_conversation_list(self, status: str = "all", assignee_type: str = "all", team_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        return await self.conversation_service.get_conversation_list(
+            status=status, assignee_type=assignee_type, team_id=team_id
+        )
+
+    # --- Admin Methods ---
+    async def get_teams(self) -> List[Dict[str, Any]]:
+        return await self.admin_service.get_teams()
 
     async def create_custom_attribute_definition(
         self,
@@ -214,205 +194,21 @@ class ChatwootHandler:
         description: str = "",
         attribute_model: int = 0,
     ) -> Dict[str, Any]:
-        """Create a new custom attribute definition for conversations or contacts.
+        return await self.admin_service.create_custom_attribute_definition(
+            display_name=display_name,
+            attribute_key=attribute_key,
+            attribute_values=attribute_values,
+            description=description,
+            attribute_model=attribute_model,
+        )
 
-        Args:
-            display_name: The display name for the attribute
-            attribute_key: Unique key for the attribute
-            attribute_values: List of possible values for the list-type attribute
-            description: Optional description of the attribute
-            attribute_model: 0 for conversation attribute, 1 for contact attribute
-        """
-        url = f"{self.account_url}/custom_attribute_definitions"
-        data = {
-            "attribute_display_name": display_name,
-            "attribute_display_type": 6,  # 6 represents list type
-            "attribute_description": description,
-            "attribute_key": attribute_key,
-            "attribute_values": attribute_values,
-            "attribute_model": attribute_model,
-        }
+    # Note: If ChatwootHandler was an async context manager or had an explicit close method
+    # for a shared httpx.AsyncClient, that would be handled here.
+    # Based on the "revised approach", services manage their own clients, so no top-level close needed in ChatwootHandler.
+    # async def close_client(self):
+    #     # If a shared client was used, close it here.
+    #     # await self.shared_async_client.aclose()
+    #     logger.info("ChatwootHandler's resources (if any) released.")
+    #     pass
 
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(url, json=data, headers=self.headers)
-                response.raise_for_status()
-                return response.json()
-        except Exception as e:
-            logger.error(f"Failed to create custom attribute definition: {e}")
-            raise
-
-    async def toggle_status(
-        self,
-        conversation_id: int,
-        status: str,
-        previous_status: Optional[str] = None,
-        is_error_transition: bool = False,
-    ) -> Dict[str, Any]:
-        """Toggle conversation status
-        Valid statuses: 'open', 'resolved', 'pending', 'snoozed'
-        """
-        url = f"{self.conversations_url}/{conversation_id}/toggle_status"
-        data = {"status": status}
-
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(url, json=data, headers=self.headers)
-                response.raise_for_status()
-
-                # Send internal notification if status changed from pending to open
-                # due to an error
-                if status == "open" and previous_status == "pending" and is_error_transition:
-                    try:
-                        logger.info(
-                            f"Conversation {conversation_id} changed from pending to"
-                            "open due to error, sending internal notification."
-                        )
-                        await self.send_message(
-                            conversation_id=conversation_id,
-                            message=config.BOT_ERROR_MESSAGE_INTERNAL,
-                            # Use new internal error message
-                            private=True,
-                        )
-                    except Exception as e_notify:
-                        logger.error(
-                            "Failed to send 'pending to open internal error'"
-                            f"notification for convo {conversation_id}: {e_notify}"
-                        )
-
-                return response.json()
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                f"Status update failed for conversation {conversation_id}:\n"
-                f"URL: {url}\nStatus: {e.response.status_code}\n"
-                f"Response: {e.response.text}\nPayload: {data}",
-                exc_info=True,
-            )
-            raise
-
-    def toggle_status_sync(
-        self,
-        conversation_id: int,
-        status: str,
-        previous_status: Optional[str] = None,
-        is_error_transition: bool = False,
-    ) -> Dict[str, Any]:
-        """Toggle conversation status synchronously
-        Valid statuses: 'open', 'resolved', 'pending', 'snoozed'
-        """
-        url = f"{self.conversations_url}/{conversation_id}/toggle_status"
-        data = {"status": status}
-
-        try:
-            with httpx.Client() as client:
-                response = client.post(url, json=data, headers=self.headers)
-                response.raise_for_status()
-
-                # Send internal notification if status changed from pending to open
-                # due to an error
-                if status == "open" and previous_status == "pending" and is_error_transition:
-                    try:
-                        logger.info(
-                            f"Conversation {conversation_id} (sync) changed from pending to open due to error,"
-                            "sending internal notification."
-                        )
-                        self.send_message_sync(
-                            conversation_id=conversation_id,
-                            message=config.BOT_ERROR_MESSAGE_INTERNAL,
-                            private=True,
-                        )
-                    except Exception as e_notify:
-                        logger.error(
-                            "Failed to send 'pending to open internal error' notification (sync)"
-                            f" for convo {conversation_id}: {e_notify}"
-                        )
-
-                return response.json()
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                f"Status update failed for conversation {conversation_id}:\n"
-                f"URL: {url}\nStatus: {e.response.status_code}\n"
-                f"Response: {e.response.text}\nPayload: {data}",
-                exc_info=True,
-            )
-            raise
-
-    async def get_teams(self) -> List[Dict[str, Any]]:
-        """Fetch all teams from the Chatwoot account.
-
-        Returns:
-            List of team objects with properties like id, name, description, etc.
-        """
-        url = f"{self.account_url}/teams"
-
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, headers=self.admin_headers)
-                response.raise_for_status()
-                return response.json()
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                f"Failed to fetch teams:\nURL: {url}\nStatus: {e.response.status_code}\nResponse: {e.response.text}",
-                exc_info=True,
-            )
-            logger.warning("Resroting to using hardcoded teams")
-            return [
-                {
-                    "id": 3,
-                    "name": "срочная служба",
-                    "description": "",
-                    "allow_auto_assign": True,
-                    "private": False,
-                    "account_id": 1,
-                    "is_member": True,
-                },
-                {
-                    "id": 4,
-                    "name": "консультанты",
-                    "description": "",
-                    "allow_auto_assign": True,
-                    "private": False,
-                    "account_id": 1,
-                    "is_member": True,
-                },
-                {
-                    "id": 5,
-                    "name": "мобилизация",
-                    "description": "",
-                    "allow_auto_assign": True,
-                    "private": False,
-                    "account_id": 1,
-                    "is_member": True,
-                },
-                {
-                    "id": 6,
-                    "name": "дезертиры",
-                    "description": "",
-                    "allow_auto_assign": True,
-                    "private": False,
-                    "account_id": 1,
-                    "is_member": True,
-                },
-            ]
-
-    async def get_conversation_list(self, status: str = "all", assignee_type: str = "all") -> List[Dict[str, Any]]:
-        """Get a list of conversations based on filters.
-
-        Args:
-            status: Filter by conversation status (all, open, resolved, pending)
-            assignee_type: Filter by assignee (all, me, unassigned)
-
-        Returns:
-            List of conversation objects
-        """
-        url = f"{self.conversations_url}?status={status}&assignee_type={assignee_type}"
-
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, headers=self.headers)
-                response.raise_for_status()
-                data = response.json()
-                return data.get("data", [])
-        except Exception as e:
-            logger.error(f"Failed to get conversation list: {e}")
-            raise
+logger.info("ChatwootHandler (Facade) initialized using services.")

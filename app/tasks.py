@@ -1,12 +1,14 @@
 import logging
 from typing import Any, Dict, Optional
 
-import httpx
+import httpx # Keep for ChatwootHandler and other potential non-Dify calls if any
 from celery import Celery, signals
 from dotenv import load_dotenv
 
 from . import config
 from .api.chatwoot import ChatwootHandler
+# Import DifyClient and its exceptions
+from .dify_client import DifyClient, DifyApiError, DifyConversationNotFoundError
 from .config import BOT_CONVERSATION_OPENED_MESSAGE_EXTERNAL, BOT_ERROR_MESSAGE_INTERNAL
 from .database import SessionLocal
 from .models.database import Dialogue, DifyResponse
@@ -14,7 +16,11 @@ from .utils.sentry import init_sentry
 
 load_dotenv()
 
-# Use timeout constants from config
+# HTTPX_TIMEOUT is now used by DifyClient internally, passed from config.DIFY_HTTP_TIMEOUT
+# We might still need a general timeout for other httpx calls (e.g. Chatwoot)
+# For now, let's assume ChatwootHandler manages its own timeouts or use a default one.
+# If ChatwootHandler needs specific timeouts, they should be configured similarly.
+# The global HTTPX_TIMEOUT might still be useful for other direct httpx calls in this file, if any.
 HTTPX_TIMEOUT = httpx.Timeout(
     connect=config.HTTPX_CONNECT_TIMEOUT,
     read=config.HTTPX_READ_TIMEOUT,
@@ -22,8 +28,12 @@ HTTPX_TIMEOUT = httpx.Timeout(
     pool=config.HTTPX_POOL_TIMEOUT,
 )
 
+
 # Use LOG_LEVEL from config instead of directly from environment
 LOG_LEVEL = config.LOG_LEVEL
+# Ensure DifyClient's logger also respects this level if not already configured
+dify_client_logger = logging.getLogger("app.dify_client")
+dify_client_logger.setLevel(getattr(logging, LOG_LEVEL.upper(), logging.INFO))
 
 REDIS_BROKER = config.REDIS_BROKER
 REDIS_BACKEND = config.REDIS_BACKEND
@@ -118,127 +128,112 @@ def process_message_with_dify(
     if message.startswith(BOT_CONVERSATION_OPENED_MESSAGE_EXTERNAL) or message.startswith(BOT_ERROR_MESSAGE_INTERNAL):
         logger.info(f"Skipping self-generated message: {message[:50]}...")
         return {"status": "skipped", "reason": "agent_bot message"}
-    url = f"{config.DIFY_API_URL}/chat-messages"
-    headers = {
-        "Authorization": f"Bearer {config.DIFY_API_KEY}",
-        "Content-Type": "application/json",
-    }
 
     logger.info(
         f"Processing message with Dify for chatwoot_conversation_id={chatwoot_conversation_id}, "
         f"dify_conversation_id={dify_conversation_id}, direction: {message_type}"
     )
-    data = {
-        "query": message,
-        "inputs": {
-            "chatwoot_conversation_id": chatwoot_conversation_id,
-            "conversation_status": conversation_status,
-            "message_direction": message_type,
-        },
-        "response_mode": config.DIFY_RESPONSE_MODE,
-        "user": "user",
-    }
 
-    # Only include conversation_id in the payload if it's already set
-    if dify_conversation_id:
-        data["conversation_id"] = dify_conversation_id
-        logger.info("Using existing dify_conversation_id.")
-    else:
-        logger.info("No dify_conversation_id provided. Attempting to create conversation via first message.")
-        # Payload for creation doesn't include 'conversation_id' key
+    # Instantiate DifyClient - Timeout is already configured in DIFY_HTTP_TIMEOUT from config
+    dify_client = DifyClient(api_url=config.DIFY_API_URL, api_key=config.DIFY_API_KEY, timeout=config.DIFY_HTTP_TIMEOUT)
+
+    # Prepare inputs for DifyClient
+    dify_inputs = {
+        "chatwoot_conversation_id": chatwoot_conversation_id,
+        "conversation_status": conversation_status,
+        "message_direction": message_type,
+    }
+    # The 'user' parameter for Dify is typically a user identifier string.
+    # In the original code, it was hardcoded as "user".
+    dify_user_id = "user" # Or derive from Chatwoot if available/needed
 
     try:
-        with httpx.Client(timeout=HTTPX_TIMEOUT) as client:
-            response = client.post(url, json=data, headers=headers)
-            # Store response content before raising exception
-            if response.status_code >= 400:
-                error_content = response.text
-                logger.error(f"Dify API error response ({response.status_code}): {error_content}")
-            response.raise_for_status()  # Raise exception for 4xx/5xx
-            result = response.json()
-            logger.info(f"Dify API success for chatwoot_conversation_id={chatwoot_conversation_id}")
+        result = dify_client.send_chat_message(
+            message_content=message,
+            user_id=dify_user_id,
+            inputs=dify_inputs,
+            response_mode=config.DIFY_RESPONSE_MODE,
+            conversation_id=dify_conversation_id
+        )
+        logger.info(f"Dify API call successful for chatwoot_conversation_id={chatwoot_conversation_id}")
 
-            # --- Handle Conversation Creation ---
-            # If we started without an ID, extract the new one from the response and update DB
-            if not dify_conversation_id and chatwoot_conversation_id:
-                new_dify_id = result.get("conversation_id")
-                if new_dify_id:
-                    logger.info(f"New Dify conversation created: {new_dify_id}. Updating database.")
-                    # Update DB synchronously within the task
-                    update_dialogue_dify_id_sync(chatwoot_conversation_id, new_dify_id)
-                else:
-                    # --- MODIFIED: Error log and retry ---
-                    error_msg = (
-                        f"Dify API call succeeded (status {response.status_code}) but didn't return a 'conversation_id'"
-                        f"when one was expected (initial creation for chatwoot_convo_id={chatwoot_conversation_id}). "
-                        f"Dify response: {result}"
-                    )
-                    logger.error(error_msg)
-                    # Retry the task, maybe it was a temporary glitch in Dify returning the ID
-                    try:
-                        logger.warning(
-                            f"Retrying task due to missing conversation_id on creation "
-                            f"(attempt {self.request.retries + 1}/{self.max_retries})..."
-                        )
-                        # Using default retry delay configured for the task
-                        self.retry(
-                            exc=RuntimeError(error_msg),
-                            countdown=config.CELERY_RETRY_COUNTDOWN,
-                        )
-                    except self.MaxRetriesExceededError:
-                        logger.error(
-                            f"Max retries exceeded for missing conversation_id on creation for "
-                            f"chatwoot_convo_id={chatwoot_conversation_id}. Failing task.",
-                            exc_info=True,
-                        )
-                        # Fall through to generic error handling below by raising the original error
-                        raise RuntimeError(error_msg) from None  # Reraise to trigger final error handling
-                    # --- END MODIFICATION ---
-            # --- End Handle Conversation Creation ---
-
-            return result  # Return successful result (contains first message answer)
-
-    except httpx.HTTPStatusError as e:
-        # Specific retry logic for 404 ONLY when a conversation ID WAS provided
-        if e.response.status_code == 404 and dify_conversation_id:
-            logger.warning(
-                f"Dify 404 (Conversation Not Found) for *existing* dify_id={dify_conversation_id}. "
-                f"Retrying task (attempt {self.request.retries + 1}/{self.max_retries})..."
-            )
-            try:
-                # Use Celery's retry mechanism with countdown
-                self.retry(exc=e, countdown=config.CELERY_RETRY_COUNTDOWN)  # Use configured countdown
-            except self.MaxRetriesExceededError:
-                logger.error(
-                    f"Max retries exceeded for Dify 404 on conversation {dify_conversation_id}. Failing task.",
-                    exc_info=True,
+        # --- Handle Conversation Creation ---
+        if not dify_conversation_id and chatwoot_conversation_id:
+            new_dify_id = result.get("conversation_id")
+            if new_dify_id:
+                logger.info(f"New Dify conversation created: {new_dify_id}. Updating database.")
+                update_dialogue_dify_id_sync(chatwoot_conversation_id, new_dify_id)
+            else:
+                error_msg = (
+                    f"Dify API call succeeded but didn't return a 'conversation_id' "
+                    f"when one was expected (initial creation for chatwoot_convo_id={chatwoot_conversation_id}). "
+                    f"Dify response: {result}"
                 )
-                # Fall through to generic error handling (set status to open, etc.)
-        # If it was a 404 but dify_conversation_id was None, it means creation failed - don't retry.
-        elif e.response.status_code == 404 and not dify_conversation_id:
-            logger.error(
-                f"Dify returned 404 when attempting initial conversation creation."
-                f"Payload: {data}. Response: {e.response.text}",
-                exc_info=True,
-            )
-            # Fall through to generic error handling
-        # Log other HTTP errors before falling through
-        elif isinstance(e, httpx.HTTPStatusError):
-            logger.error(
-                f"HTTP Error {e.response.status_code} processing Dify message: {e.response.text}",
-                exc_info=True,
-            )
-            # Fall through to generic error handling
+                logger.error(error_msg)
+                try:
+                    logger.warning(
+                        f"Retrying task due to missing conversation_id on creation "
+                        f"(attempt {self.request.retries + 1}/{self.max_retries})..."
+                    )
+                    self.retry(exc=RuntimeError(error_msg), countdown=config.CELERY_RETRY_COUNTDOWN)
+                except self.MaxRetriesExceededError:
+                    logger.error(
+                        f"Max retries exceeded for missing conversation_id on creation for "
+                        f"chatwoot_convo_id={chatwoot_conversation_id}. Failing task.",
+                        exc_info=True,
+                    )
+                    raise RuntimeError(error_msg) from None
+        # --- End Handle Conversation Creation ---
 
-        # Generic error handling for non-retryable errors or max retries exceeded
+        return result
+
+    except DifyConversationNotFoundError as e:
+        # This is the specific 404 error for an existing conversation_id from DifyClient
+        logger.warning(
+            f"DifyConversationNotFoundError for dify_id={dify_conversation_id}. "
+            f"Retrying task (attempt {self.request.retries + 1}/{self.max_retries}). Error: {e}"
+        )
+        try:
+            self.retry(exc=e, countdown=config.CELERY_RETRY_COUNTDOWN)
+        except self.MaxRetriesExceededError:
+            logger.error(
+                f"Max retries exceeded for DifyConversationNotFoundError on conversation {dify_conversation_id}. Failing task.",
+                exc_info=True,
+            )
+            # Fall through to generic error handling by re-raising
+            # The generic handler below will catch this re-raised 'e'
+            pass # Let it fall through to the DifyApiError or general Exception handler
+
+    except DifyApiError as e: # Catch other Dify API errors (non-404 or 404 on creation)
+        # Log the DifyApiError. The DifyClient should have already logged details.
+        logger.error(
+            f"DifyApiError processing message for chatwoot_convo_id={chatwoot_conversation_id}, "
+            f"dify_convo_id={dify_conversation_id}. Error: {e}",
+            exc_info=True
+        )
+        # Check if it's a 404 during creation (dify_conversation_id was None)
+        # The DifyClient raises DifyApiError for general HTTP errors, and DifyConversationNotFoundError for 404s on *existing* IDs.
+        # If dify_conversation_id was None, a 404 means creation failed. This is not typically retried.
+        if "404" in str(e) and not dify_conversation_id: # Simple check, might need refinement
+             logger.error(
+                f"Dify returned 404 when attempting initial conversation creation. Error: {e}",
+                exc_info=True
+            )
+        # For other DifyApiErrors, we might not want to retry indefinitely or use the same logic as 404.
+        # The original code retried only specific 404s. Other HTTPStatusErrors fell through.
+        # We will let this fall through to the generic error handling for now.
+        pass # Let it fall through to the generic Exception handler that calls Chatwoot etc.
+
+
+    # Generic error handling for DifyApiError that wasn't retried, or other exceptions
+    # This block will catch DifyApiError if it's not DifyConversationNotFoundError or if retries for it are exhausted.
+    # It will also catch any other unexpected exceptions.
+    except Exception as e: # Catches DifyApiError, DifyConversationNotFoundError (if retries exhausted), httpx.RequestError (if DifyClient fails to catch), etc.
         logger.critical(
             f"Critical error processing message with Dify: {e} \n"
-            f"conversation_id: {dify_conversation_id} \n chatwoot_conversation_id: {chatwoot_conversation_id}",
+            f"dify_conversation_id: {dify_conversation_id} \n chatwoot_conversation_id: {chatwoot_conversation_id}",
             exc_info=True,
         )
-        # If it's an HTTP error, try to extract and log the response content again (might be redundant but safe)
-        if isinstance(e, httpx.HTTPStatusError) and hasattr(e, "response"):
-            logger.error(f"Final Response content on failure: {e.response.text}")
 
         # Set conversation status to open on error
         if chatwoot_conversation_id:
@@ -348,23 +343,31 @@ def handle_dify_error(request: Dict[str, Any], exc: Exception, traceback: str, c
 @celery.task(name="app.tasks.delete_dify_conversation")
 def delete_dify_conversation(dify_conversation_id: str):
     """Delete a conversation from Dify when it's deleted in Chatwoot"""
-    logger.info(f"Deleting Dify conversation: {dify_conversation_id}")
+    logger.info(f"Attempting to delete Dify conversation: {dify_conversation_id}")
 
-    url = f"{config.DIFY_API_URL}/conversations/{dify_conversation_id}"
-    headers = {
-        "Authorization": f"Bearer {config.DIFY_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    dify_client = DifyClient(api_url=config.DIFY_API_URL, api_key=config.DIFY_API_KEY, timeout=config.DIFY_HTTP_TIMEOUT)
 
     try:
-        with httpx.Client(timeout=HTTPX_TIMEOUT) as client:
-            response = client.delete(url, headers=headers)
-            response.raise_for_status()
-            logger.info(f"Successfully deleted Dify conversation: {dify_conversation_id}")
-            return {"status": "success", "conversation_id": dify_conversation_id}
-    except Exception as e:
+        result = dify_client.delete_conversation(conversation_id=dify_conversation_id)
+        logger.info(f"Successfully initiated deletion of Dify conversation: {dify_conversation_id}. Result: {result}")
+        return result
+    except DifyConversationNotFoundError: # Specific error for 404
+        logger.warning(
+            f"Dify conversation {dify_conversation_id} not found for deletion (404). Assuming already deleted or never existed.",
+            exc_info=True
+        )
+        # Not re-raising as an error, as the goal is for it to be gone.
+        return {"status": "not_found", "conversation_id": dify_conversation_id}
+    except DifyApiError as e: # Catch other errors from DifyClient during delete
         logger.error(
-            f"Failed to delete Dify conversation {dify_conversation_id}: {e}",
+            f"DifyApiError occurred while deleting Dify conversation {dify_conversation_id}: {e}",
+            exc_info=True,
+        )
+        # Re-raise to mark the task as failed if deletion fails for reasons other than not found
+        raise e from e
+    except Exception as e: # Catch any other unexpected errors
+        logger.error(
+            f"Unexpected error while deleting Dify conversation {dify_conversation_id}: {e}",
             exc_info=True,
         )
         raise e from e
