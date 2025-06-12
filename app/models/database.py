@@ -124,7 +124,7 @@ class ChatwootWebhook(SQLModel):
     def to_dialogue_create(self) -> DialogueCreate:
         return DialogueCreate(
             chatwoot_conversation_id=str(self.conversation_id),
-            status=self.status or "pending",
+            status=self.status or "open",
             assignee_id=self.assignee_id,
         )
 
