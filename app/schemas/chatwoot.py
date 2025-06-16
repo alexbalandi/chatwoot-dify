@@ -1,4 +1,5 @@
 """Chatwoot webhook-related Pydantic v2 DTO schemas."""
+
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
@@ -8,16 +9,18 @@ from app.schemas.conversation import ConversationCreate
 
 class ChatwootSender(BaseModel):
     """Schema for Chatwoot message sender information."""
+
     model_config = ConfigDict(from_attributes=True)
-    
+
     id: Optional[int] = Field(default=None, description="Sender ID")
     type: Optional[str] = Field(default=None, description="Sender type (user, agent_bot, etc.)")
 
 
 class ChatwootMeta(BaseModel):
     """Schema for Chatwoot conversation metadata."""
+
     model_config = ConfigDict(from_attributes=True)
-    
+
     assignee: Optional[dict] = Field(default=None, description="Assignee information")
 
     @computed_field
@@ -29,8 +32,9 @@ class ChatwootMeta(BaseModel):
 
 class ChatwootConversation(BaseModel):
     """Schema for Chatwoot conversation data."""
+
     model_config = ConfigDict(from_attributes=True)
-    
+
     id: int = Field(..., description="Chatwoot conversation ID")
     status: str = Field(default="pending", description="Conversation status")
     inbox_id: Optional[int] = Field(default=None, description="Inbox ID where conversation belongs")
@@ -45,8 +49,9 @@ class ChatwootConversation(BaseModel):
 
 class ChatwootMessage(BaseModel):
     """Schema for Chatwoot message data."""
+
     model_config = ConfigDict(from_attributes=True)
-    
+
     id: int = Field(..., description="Message ID")
     content: str = Field(..., description="Message content")
     message_type: Literal["incoming", "outgoing"] = Field(..., description="Direction of the message")
@@ -56,8 +61,9 @@ class ChatwootMessage(BaseModel):
 
 class ChatwootWebhook(BaseModel):
     """Schema for Chatwoot webhook payloads with comprehensive validation."""
+
     model_config = ConfigDict(from_attributes=True)
-    
+
     event: str = Field(..., description="Webhook event type")
     message_type: Literal["incoming", "outgoing"] = Field(..., description="Message direction type")
     sender: Optional[ChatwootSender] = Field(default=None, description="Sender from payload root")
@@ -119,6 +125,6 @@ class ChatwootWebhook(BaseModel):
 
         return ConversationCreate(
             chatwoot_conversation_id=str(self.conversation_id),
-            status=self.status or "pending",
+            status=self.status or "open",
             assignee_id=self.assignee_id,
         )

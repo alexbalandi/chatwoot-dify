@@ -13,6 +13,7 @@ on:
 
 jobs:
   build-and-push:
+    if: github.repository == 'eremeye/chatdify'
     runs-on: ubuntu-latest
     env:
       DOCKER_IMAGE_NAME: ${{ secrets.CUSTOM_IMAGE_NAME || github.repository }}
