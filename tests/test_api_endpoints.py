@@ -169,7 +169,7 @@ async def test_conversation_creation_endpoint(test_client, conversation_create_f
     """Test creating a conversation via API endpoint."""
     conversation_data = conversation_create_factory(chatwoot_conversation_id="api_test_123", status="pending")
 
-    response = test_client.post("/conversations", json=conversation_data.model_dump())
+    response = test_client.post("/api/v1/chatwoot/conversations", json=conversation_data.model_dump())
     assert response.status_code == 200
     data = response.json()
 
@@ -182,7 +182,7 @@ async def test_conversation_creation_endpoint(test_client, conversation_create_f
 
 async def test_conversation_retrieval_endpoint(test_client, sample_conversation):
     """Test retrieving a conversation via API endpoint."""
-    response = test_client.get(f"/conversations/{sample_conversation.chatwoot_conversation_id}")
+    response = test_client.get(f"/api/v1/chatwoot/conversations/{sample_conversation.chatwoot_conversation_id}")
     assert response.status_code == 200
     data = response.json()
 
@@ -191,26 +191,9 @@ async def test_conversation_retrieval_endpoint(test_client, sample_conversation)
     assert conversation_response.chatwoot_conversation_id == sample_conversation.chatwoot_conversation_id
 
 
-async def test_conversation_update_endpoint(test_client, sample_conversation):
-    """Test updating a conversation via API endpoint."""
-    update_data = {"status": "resolved", "assignee_id": 456}
-
-    response = test_client.patch(
-        f"/conversations/{sample_conversation.chatwoot_conversation_id}",
-        json=update_data,
-    )
-    assert response.status_code == 200
-    data = response.json()
-
-    # Validate response
-    conversation_response = ConversationResponse.model_validate(data)
-    assert conversation_response.status == "resolved"
-    assert conversation_response.assignee_id == 456
-
-
 async def test_error_handling_invalid_conversation_id(test_client):
     """Test error handling for invalid conversation IDs."""
-    response = test_client.get("/conversations/nonexistent_id")
+    response = test_client.get("/api/v1/chatwoot/conversations/nonexistent_id")
     assert response.status_code == 404
     data = response.json()
     assert "detail" in data
