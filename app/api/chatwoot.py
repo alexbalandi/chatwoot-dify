@@ -1,4 +1,5 @@
 """Chatwoot API endpoints with SQLAlchemy 2 and Pydantic v2 integration."""
+
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -315,7 +316,7 @@ class ChatwootHandler:
 
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(url, headers=self.headers)
+                response = await client.get(url, headers=self.admin_headers)
                 response.raise_for_status()
                 data = response.json()
 
@@ -332,9 +333,7 @@ class ChatwootHandler:
 
         except httpx.HTTPStatusError as e:
             logger.error(
-                f"Get teams failed:\n"
-                f"URL: {url}\nStatus: {e.response.status_code}\n"
-                f"Response: {e.response.text}",
+                f"Get teams failed:\n" f"URL: {url}\nStatus: {e.response.status_code}\n" f"Response: {e.response.text}",
                 exc_info=True,
             )
             return []
@@ -378,6 +377,7 @@ chatwoot = ChatwootHandler()
 
 # FastAPI endpoints demonstrating new patterns
 
+
 @router.get("/conversations")
 @handle_api_errors("get conversations")
 async def get_conversations(
@@ -388,7 +388,7 @@ async def get_conversations(
 ) -> Dict[str, Any]:
     """
     Get conversations with proper SQLAlchemy 2.x query optimization and Pydantic v2 serialization.
-    
+
     Demonstrates:
     - SQLAlchemy 2.x select() syntax
     - Proper pagination
@@ -397,41 +397,36 @@ async def get_conversations(
     """
     # Build query with SQLAlchemy 2.x syntax
     query = select(Conversation)
-    
+
     # Add optional status filter
     if status:
         query = query.where(Conversation.status == status)
-    
+
     # Add pagination
     query = query.offset(offset).limit(limit)
-    
+
     # For larger datasets with relationships, we would use eager loading:
     # query = query.options(selectinload(Conversation.messages))  # if we had a messages relationship
-    
+
     # Execute query
     result = await db.execute(query)
     conversations = result.scalars().all()
-    
+
     # Count total for pagination info
-    count_result = await db.execute(select(Conversation).where(
-        Conversation.status == status if status else True
-    ))
+    count_result = await db.execute(select(Conversation).where(Conversation.status == status if status else True))
     total = len(count_result.scalars().all())
-    
+
     # Use Pydantic v2 model_validate with from_attributes for proper serialization
-    conversation_responses = [
-        ConversationResponse.model_validate(conv, from_attributes=True)
-        for conv in conversations
-    ]
-    
+    conversation_responses = [ConversationResponse.model_validate(conv, from_attributes=True) for conv in conversations]
+
     return {
         "conversations": [conv.model_dump() for conv in conversation_responses],
         "pagination": {
             "limit": limit,
             "offset": offset,
             "total": total,
-            "has_more": (offset + limit) < total
-        }
+            "has_more": (offset + limit) < total,
+        },
     }
 
 
@@ -443,7 +438,7 @@ async def get_conversation(
 ) -> ConversationResponse:
     """
     Get a single conversation by ID with optimized query and proper response serialization.
-    
+
     Demonstrates:
     - Single item query optimization
     - Proper error handling
@@ -454,14 +449,14 @@ async def get_conversation(
     # query = select(Conversation).options(joinedload(Conversation.assignee)).where(...)
     # Or selectinload for larger child sets:
     # query = select(Conversation).options(selectinload(Conversation.messages)).where(...)
-    
+
     query = select(Conversation).where(Conversation.chatwoot_conversation_id == conversation_id)
     result = await db.execute(query)
     conversation = result.scalar_one_or_none()
-    
+
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    
+
     # Use Pydantic v2 model_validate with from_attributes for proper serialization
     return ConversationResponse.model_validate(conversation, from_attributes=True)
 
@@ -481,8 +476,8 @@ async def create_conversation(
     - Proper response serialization with populated auto-generated fields
     """
     # Use Pydantic model_dump for safe data extraction
-    conversation_dict = conversation_data.model_dump(exclude={'id'})
-    
+    conversation_dict = conversation_data.model_dump(exclude={"id"})
+
     # Create SQLAlchemy model instance
     conversation = Conversation(**conversation_dict)
 
@@ -495,6 +490,6 @@ async def create_conversation(
 
     # Refresh to ensure all fields are loaded from the database
     await db.refresh(conversation)
-    
+
     # Use Pydantic v2 model_validate with from_attributes for response
     return ConversationResponse.model_validate(conversation, from_attributes=True)
