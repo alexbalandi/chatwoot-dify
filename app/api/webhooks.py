@@ -52,22 +52,20 @@ async def get_or_create_conversation(db: AsyncSession, data: ConversationCreate)
     Uses optimized SQLAlchemy 2.x query patterns.
     """
     # Use SQLAlchemy 2.x select syntax with proper type hints
-    statement = select(Conversation).where(
-        Conversation.chatwoot_conversation_id == data.chatwoot_conversation_id
-    )
+    statement = select(Conversation).where(Conversation.chatwoot_conversation_id == data.chatwoot_conversation_id)
     result = await db.execute(statement)
     conversation = result.scalar_one_or_none()
 
     if conversation:
         # Update existing conversation with new data using Pydantic model_dump
-        update_data = data.model_dump(exclude_unset=True, exclude={'id'})
+        update_data = data.model_dump(exclude_unset=True, exclude={"id"})
         for field, value in update_data.items():
             if hasattr(conversation, field):
                 setattr(conversation, field, value)
         conversation.updated_at = datetime.now(UTC)
     else:
         # Create new conversation using Pydantic model_dump
-        conversation_data = data.model_dump(exclude={'id'})
+        conversation_data = data.model_dump(exclude={"id"})
         conversation = Conversation(**conversation_data)
         db.add(conversation)
 
@@ -123,6 +121,14 @@ async def chatwoot_webhook(
         logger.debug(f"Webhook payload: {payload}")
 
         if webhook_data.event == "message_created":
+            if webhook_data.message_type not in ("incoming", "outgoing"):
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "Validation error",
+                        "message": "message_type is required for message_created events",
+                    },
+                )
             logger.info(f"Webhook data: {webhook_data}")
             if webhook_data.sender_type in [
                 "agent_bot",
@@ -246,9 +252,7 @@ async def chatwoot_webhook(
 @router.post("/update-labels/{conversation_id}")
 @handle_api_errors("update labels")
 async def update_labels(
-    conversation_id: int,
-    labels: List[str],
-    db: AsyncSession = Depends(get_session)
+    conversation_id: int, labels: List[str], db: AsyncSession = Depends(get_session)
 ) -> Dict[str, Any]:
     """Update labels for a Chatwoot conversation."""
     result = await chatwoot.add_labels(conversation_id, labels)
@@ -318,13 +322,10 @@ async def toggle_conversation_priority(
 @router.get("/conversations/dify/{dify_conversation_id}")
 @handle_api_errors("get conversation by Dify ID")
 async def get_chatwoot_conversation_id(
-    dify_conversation_id: str,
-    db: AsyncSession = Depends(get_session)
+    dify_conversation_id: str, db: AsyncSession = Depends(get_session)
 ) -> ConversationResponse:
     """Get Chatwoot conversation ID from Dify conversation ID using proper response serialization."""
-    statement = select(Conversation).where(
-        Conversation.dify_conversation_id == dify_conversation_id
-    )
+    statement = select(Conversation).where(Conversation.dify_conversation_id == dify_conversation_id)
     result = await db.execute(statement)
     conversation = result.scalar_one_or_none()
 
@@ -338,13 +339,10 @@ async def get_chatwoot_conversation_id(
 @router.get("/conversation-info/{chatwoot_conversation_id}")
 @handle_api_errors("get conversation info")
 async def get_conversation_info(
-    chatwoot_conversation_id: int,
-    db: AsyncSession = Depends(get_session)
+    chatwoot_conversation_id: int, db: AsyncSession = Depends(get_session)
 ) -> ConversationResponse:
     """Get conversation information using optimized query and proper response serialization."""
-    statement = select(Conversation).where(
-        Conversation.chatwoot_conversation_id == str(chatwoot_conversation_id)
-    )
+    statement = select(Conversation).where(Conversation.chatwoot_conversation_id == str(chatwoot_conversation_id))
     result = await db.execute(statement)
     conversation = result.scalar_one_or_none()
 

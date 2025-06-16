@@ -42,15 +42,15 @@ async def test_chatwoot_connection_with_mock(mock_chatwoot_handler):
     assert teams[0]["name"] == "Test Team"
 
 
-async def test_send_message(chatwoot_handler, test_conversation_id):
+async def test_send_message(chatwoot_handler, new_chatwoot_conversation):
     """Test sending a message to a conversation."""
     message = (
         f"Test message {random_string()} at {datetime.now(timezone.utc).isoformat()} - "
         "Acknowledge receiving by saying `I see a test message`"
     )
-    # Send a message (as a private note to avoid disturbing real conversations)
-    result = await chatwoot_handler.send_message(conversation_id=test_conversation_id, message=message, private=True)
-
+    result = await chatwoot_handler.send_message(
+        conversation_id=new_chatwoot_conversation, message=message, private=True
+    )
     assert result is not None
     assert "id" in result, "Expected response to contain message ID"
 
@@ -65,27 +65,17 @@ async def test_send_message_with_mock(mock_chatwoot_handler):
     assert result["content"] == "Test response"
 
 
-async def test_update_conversation_status(chatwoot_handler, test_conversation_id):
+async def test_update_conversation_status(chatwoot_handler, new_chatwoot_conversation):
     """Test updating conversation status."""
-    # First get current status
-    conversation_data = await chatwoot_handler.get_conversation_data(test_conversation_id)
-    original_status = conversation_data.get("status")
-
-    # Choose a different status than the current one
-    statuses = ["open", "pending"]
-    new_status = statuses[0] if original_status != statuses[0] else statuses[1]
-
-    # Update status
-    result = await chatwoot_handler.toggle_status(conversation_id=test_conversation_id, status=new_status)
-
-    assert result is not None
-
-    # Verify status was changed
-    updated_conversation = await chatwoot_handler.get_conversation_data(test_conversation_id)
-    assert updated_conversation.get("status") == new_status
-
-    # Reset to original status
-    await chatwoot_handler.toggle_status(conversation_id=test_conversation_id, status=original_status)
+    conversation_data = await chatwoot_handler.get_conversation_data(new_chatwoot_conversation)
+    original_status = conversation_data.get("status", "open")
+    new_status = "resolved" if original_status != "resolved" else "open"
+    result = await chatwoot_handler.toggle_status(conversation_id=new_chatwoot_conversation, status=new_status)
+    print("toggle_status response:", result)
+    assert result["payload"]["success"] is True
+    updated_conversation = await chatwoot_handler.get_conversation_data(new_chatwoot_conversation)
+    assert updated_conversation["status"] == new_status
+    await chatwoot_handler.toggle_status(conversation_id=new_chatwoot_conversation, status=original_status)
 
 
 async def test_update_conversation_status_with_mock(mock_chatwoot_handler):
@@ -98,19 +88,14 @@ async def test_update_conversation_status_with_mock(mock_chatwoot_handler):
     assert result["status"] == "success"
 
 
-async def test_add_labels(chatwoot_handler, test_conversation_id):
+async def test_add_labels(chatwoot_handler, new_chatwoot_conversation):
     """Test adding labels to a conversation."""
-    test_label = f"test-label-{random_string(5)}"
-
-    # Add a label
-    result = await chatwoot_handler.add_labels(conversation_id=test_conversation_id, labels=[test_label])
-
-    assert result is not None
-
-    # Verify label was added
-    conversation_data = await chatwoot_handler.get_conversation_data(test_conversation_id)
-    labels = conversation_data.get("labels", [])
-    assert test_label in labels, f"Expected label {test_label} to be added"
+    test_label = "test_label"
+    result = await chatwoot_handler.add_labels(conversation_id=new_chatwoot_conversation, labels=[test_label])
+    print("add_labels response:", result)
+    assert isinstance(result.get("payload"), list)
+    conversation_data = await chatwoot_handler.get_conversation_data(new_chatwoot_conversation)
+    assert test_label in conversation_data.get("labels", [])
 
 
 async def test_add_labels_with_mock(mock_chatwoot_handler):
@@ -128,23 +113,18 @@ async def test_add_labels_with_mock(mock_chatwoot_handler):
     assert test_label in conversation_data["labels"]
 
 
-async def test_update_custom_attributes(chatwoot_handler, test_conversation_id):
+async def test_update_custom_attributes(chatwoot_handler, new_chatwoot_conversation):
     """Test updating custom attributes."""
     test_attribute_key = f"test_attr_{random_string(5)}"
     test_attribute_value = f"value_{random_string(5)}"
-
-    # Update custom attributes
     result = await chatwoot_handler.update_custom_attributes(
-        conversation_id=test_conversation_id, custom_attributes={test_attribute_key: test_attribute_value}
+        conversation_id=new_chatwoot_conversation,
+        custom_attributes={test_attribute_key: test_attribute_value},
     )
-
-    assert result is not None
-
-    # Verify attribute was added
-    conversation_data = await chatwoot_handler.get_conversation_data(test_conversation_id)
-    custom_attributes = conversation_data.get("custom_attributes", {})
-    assert test_attribute_key in custom_attributes, f"Expected attribute {test_attribute_key} to be added"
-    assert custom_attributes[test_attribute_key] == test_attribute_value
+    print("update_custom_attributes response:", result)
+    assert "custom_attributes" in result
+    conversation_data = await chatwoot_handler.get_conversation_data(new_chatwoot_conversation)
+    assert conversation_data["custom_attributes"].get(test_attribute_key) == test_attribute_value
 
 
 async def test_update_custom_attributes_with_mock(mock_chatwoot_handler):
@@ -166,31 +146,17 @@ async def test_update_custom_attributes_with_mock(mock_chatwoot_handler):
     assert conversation_data["custom_attributes"][test_key] == test_value
 
 
-async def test_toggle_priority(chatwoot_handler, test_conversation_id):
+async def test_toggle_priority(chatwoot_handler, new_chatwoot_conversation):
     """Test toggling priority of a conversation."""
-    priorities = ["high", "medium", "low"]
-
-    # Get current priority
-    conversation_data = await chatwoot_handler.get_conversation_data(test_conversation_id)
-    original_priority = conversation_data.get("priority")
-
-    # Choose a different priority
-    new_priority = next((p for p in priorities if p != original_priority), priorities[0])
-
-    # Set new priority
-    result = await chatwoot_handler.toggle_priority(conversation_id=test_conversation_id, priority=new_priority)
-
-    assert result is not None
-
-    # Verify priority was changed
-    updated_conversation = await chatwoot_handler.get_conversation_data(test_conversation_id)
-    assert updated_conversation.get("priority") == new_priority
-
-    # Reset to original priority
-    await chatwoot_handler.toggle_priority(
-        conversation_id=test_conversation_id,
-        priority=original_priority or "medium",  # Default to medium if original was None
-    )
+    conversation_data = await chatwoot_handler.get_conversation_data(new_chatwoot_conversation)
+    original_priority = conversation_data.get("priority", "medium")
+    new_priority = "high" if original_priority != "high" else "medium"
+    result = await chatwoot_handler.toggle_priority(conversation_id=new_chatwoot_conversation, priority=new_priority)
+    print("toggle_priority response:", result)
+    assert result == {}  # Empty dict means success
+    updated_conversation = await chatwoot_handler.get_conversation_data(new_chatwoot_conversation)
+    assert updated_conversation["priority"] == new_priority
+    await chatwoot_handler.toggle_priority(conversation_id=new_chatwoot_conversation, priority=original_priority)
 
 
 async def test_toggle_priority_with_mock(mock_chatwoot_handler):
@@ -231,7 +197,11 @@ async def test_webhook_payload_validation(chatwoot_webhook_factory):
     """Test webhook payload validation with Pydantic v2 schemas."""
     # Test valid webhook payload
     webhook = chatwoot_webhook_factory(
-        event="message_created", message_type="incoming", content="Test message", conversation_id=123, sender_id=456
+        event="message_created",
+        message_type="incoming",
+        content="Test message",
+        conversation_id=123,
+        sender_id=456,
     )
 
     assert webhook.event == "message_created"

@@ -65,7 +65,7 @@ class ChatwootWebhook(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     event: str = Field(..., description="Webhook event type")
-    message_type: Literal["incoming", "outgoing"] = Field(..., description="Message direction type")
+    message_type: Optional[Literal["incoming", "outgoing"]] = Field(..., description="Message direction type")
     sender: Optional[ChatwootSender] = Field(default=None, description="Sender from payload root")
     message: Optional[ChatwootMessage] = Field(default=None, description="Message data")
     conversation: Optional[ChatwootConversation] = Field(default=None, description="Conversation data")

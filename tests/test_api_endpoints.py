@@ -24,9 +24,10 @@ pytestmark = pytest.mark.asyncio
 @pytest.fixture
 def override_get_session(async_session):
     """Override the database session dependency for testing."""
+
     async def _get_session():
         yield async_session
-    
+
     app.dependency_overrides[get_session] = _get_session
     yield
     app.dependency_overrides.clear()
@@ -63,7 +64,7 @@ async def test_webhook_endpoint_with_valid_payload(chatwoot_webhook_factory):
         message_type="incoming",
         content="Test message from automated test. Acknowledge receiving by saying `I see a test message`",
         conversation_id=int(os.getenv("TEST_CONVERSATION_ID", "20")),
-        sender_id=123
+        sender_id=123,
     )
 
     # Convert to dict for HTTP request
@@ -80,9 +81,7 @@ async def test_webhook_endpoint_with_valid_payload(chatwoot_webhook_factory):
 
 async def test_webhook_endpoint_with_invalid_payload():
     """Test the webhook endpoint with invalid payload for error handling."""
-    invalid_payload = {
-        "invalid_field": "invalid_value"
-    }
+    invalid_payload = {"invalid_field": "invalid_value"}
 
     async with httpx.AsyncClient(base_url=API_BASE_URL) as client:
         response = await client.post("/chatwoot-webhook", json=invalid_payload)
@@ -97,7 +96,7 @@ async def test_webhook_endpoint_with_outgoing_message(chatwoot_webhook_factory):
         message_type="outgoing",
         content="This is an outgoing message",
         conversation_id=123,
-        sender_id=456
+        sender_id=456,
     )
 
     payload_dict = webhook_payload.model_dump()
@@ -106,54 +105,60 @@ async def test_webhook_endpoint_with_outgoing_message(chatwoot_webhook_factory):
         assert response.status_code == 200
 
 
-async def test_update_labels_endpoint(test_conversation_id):
+async def test_update_labels_endpoint(new_chatwoot_conversation):
     """Test updating labels via API endpoint."""
     test_labels = ["test-label-1", "test-label-2"]
-
-    with patch('app.api.chatwoot.ChatwootHandler') as mock_handler:
-        # Mock the add_labels method
+    with patch("app.api.chatwoot.ChatwootHandler") as mock_handler:
         mock_instance = AsyncMock()
-        mock_instance.add_labels.return_value = {"status": "success", "labels": test_labels}
+        mock_instance.add_labels.return_value = {
+            "status": "success",
+            "labels": test_labels,
+        }
         mock_handler.return_value = mock_instance
-
         async with httpx.AsyncClient(base_url=API_BASE_URL) as client:
-            response = await client.post(f"/update-labels/{test_conversation_id}", json=test_labels)
+            response = await client.post(f"/update-labels/{new_chatwoot_conversation}", json=test_labels)
+            print("update_labels_endpoint response:", response.json())
             assert response.status_code == 200
             data = response.json()
             assert data["status"] == "success"
             assert "labels" in data
 
 
-async def test_toggle_priority_endpoint(test_conversation_id):
+async def test_toggle_priority_endpoint(new_chatwoot_conversation):
     """Test toggling priority via API endpoint."""
     priority_payload = {"priority": "medium"}
-
-    with patch('app.api.chatwoot.ChatwootHandler') as mock_handler:
-        # Mock the toggle_priority method
+    with patch("app.api.chatwoot.ChatwootHandler") as mock_handler:
         mock_instance = AsyncMock()
-        mock_instance.toggle_priority.return_value = {"status": "success", "priority": "medium"}
+        mock_instance.toggle_priority.return_value = {
+            "status": "success",
+            "priority": "medium",
+        }
         mock_handler.return_value = mock_instance
-
         async with httpx.AsyncClient(base_url=API_BASE_URL) as client:
-            response = await client.post(f"/toggle-priority/{test_conversation_id}", json=priority_payload)
+            response = await client.post(f"/toggle-priority/{new_chatwoot_conversation}", json=priority_payload)
+            print("toggle_priority_endpoint response:", response.json())
             assert response.status_code == 200
             data = response.json()
             assert data["status"] == "success"
-            assert "priority" in data
+            assert data["priority"] == "medium"
 
 
-async def test_custom_attributes_endpoint(test_conversation_id):
+async def test_custom_attributes_endpoint(new_chatwoot_conversation):
     """Test updating custom attributes via API endpoint."""
     attributes = {"test_key": "test_value", "region": "Test Region"}
-
-    with patch('app.api.chatwoot.ChatwootHandler') as mock_handler:
-        # Mock the update_custom_attributes method
+    with patch("app.api.chatwoot.ChatwootHandler") as mock_handler:
         mock_instance = AsyncMock()
-        mock_instance.update_custom_attributes.return_value = {"status": "success", "custom_attributes": attributes}
+        mock_instance.update_custom_attributes.return_value = {
+            "status": "success",
+            "custom_attributes": attributes,
+        }
         mock_handler.return_value = mock_instance
-
         async with httpx.AsyncClient(base_url=API_BASE_URL) as client:
-            response = await client.post(f"/update-custom-attributes/{test_conversation_id}", json=attributes)
+            response = await client.post(
+                f"/update-custom-attributes/{new_chatwoot_conversation}",
+                json=attributes,
+            )
+            print("custom_attributes_endpoint response:", response.json())
             assert response.status_code == 200
             data = response.json()
             assert data["status"] == "success"
@@ -162,15 +167,12 @@ async def test_custom_attributes_endpoint(test_conversation_id):
 
 async def test_conversation_creation_endpoint(test_client, conversation_create_factory):
     """Test creating a conversation via API endpoint."""
-    conversation_data = conversation_create_factory(
-        chatwoot_conversation_id="api_test_123",
-        status="pending"
-    )
+    conversation_data = conversation_create_factory(chatwoot_conversation_id="api_test_123", status="pending")
 
     response = test_client.post("/conversations", json=conversation_data.model_dump())
     assert response.status_code == 200
     data = response.json()
-    
+
     # Validate response structure matches ConversationResponse schema
     conversation_response = ConversationResponse.model_validate(data)
     assert conversation_response.chatwoot_conversation_id == "api_test_123"
@@ -183,7 +185,7 @@ async def test_conversation_retrieval_endpoint(test_client, sample_conversation)
     response = test_client.get(f"/conversations/{sample_conversation.chatwoot_conversation_id}")
     assert response.status_code == 200
     data = response.json()
-    
+
     # Validate response structure
     conversation_response = ConversationResponse.model_validate(data)
     assert conversation_response.chatwoot_conversation_id == sample_conversation.chatwoot_conversation_id
@@ -191,15 +193,15 @@ async def test_conversation_retrieval_endpoint(test_client, sample_conversation)
 
 async def test_conversation_update_endpoint(test_client, sample_conversation):
     """Test updating a conversation via API endpoint."""
-    update_data = {
-        "status": "resolved",
-        "assignee_id": 456
-    }
+    update_data = {"status": "resolved", "assignee_id": 456}
 
-    response = test_client.patch(f"/conversations/{sample_conversation.chatwoot_conversation_id}", json=update_data)
+    response = test_client.patch(
+        f"/conversations/{sample_conversation.chatwoot_conversation_id}",
+        json=update_data,
+    )
     assert response.status_code == 200
     data = response.json()
-    
+
     # Validate response
     conversation_response = ConversationResponse.model_validate(data)
     assert conversation_response.status == "resolved"
@@ -221,18 +223,18 @@ async def test_webhook_validation_errors():
         "event": "message_created"
         # Missing message_type and other required fields
     }
-    
+
     async with httpx.AsyncClient(base_url=API_BASE_URL) as client:
         response = await client.post("/chatwoot-webhook", json=incomplete_payload)
         assert response.status_code == 422
-        
+
         # Test invalid message_type
         invalid_message_type_payload = {
             "event": "message_created",
             "message_type": "invalid_type",
-            "content": "Test message"
+            "content": "Test message",
         }
-        
+
         response = await client.post("/chatwoot-webhook", json=invalid_message_type_payload)
         assert response.status_code == 422
 
@@ -246,9 +248,9 @@ async def test_endpoint_timeout_handling():
         "message_type": "incoming",
         "content": "Test timeout handling",
         "conversation": {"id": 123, "status": "pending"},
-        "sender": {"id": 456, "type": "contact"}
+        "sender": {"id": 456, "type": "contact"},
     }
-    
+
     async with httpx.AsyncClient(base_url=API_BASE_URL) as client:
         response = await client.post("/chatwoot-webhook", json=webhook_payload)
         # Should not timeout and should return appropriate response
