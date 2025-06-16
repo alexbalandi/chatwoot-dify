@@ -54,13 +54,11 @@
     Key environment variables to configure in `.env`:
     *   `CHATWOOT_API_URL`: Your Chatwoot instance API URL.
     *   `CHATWOOT_API_KEY`: API key for the Agent Bot.
-    *   `CHATWOOT_ADMIN_API_KEY`: API key with admin privileges (e.g., for managing teams, custom attributes).
+    *   `CHATWOOT_ADMIN_API_KEY`: API key with admin privileges (e.g., for managing teams, custom attributes, and required for fetching teams; the application uses admin headers for this purpose).
     *   `CHATWOOT_ACCOUNT_ID`: Your Chatwoot account ID.
     *   `DIFY_API_URL`: Your Dify API URL.
     *   `DIFY_API_KEY`: Your Dify pipeline/application API key.
     *   Database credentials (`POSTGRES_PASSWORD`).
-
-
 
 4.  **Chatwoot Configuration:**
     *   In your Chatwoot Super Admin console, configure an **Agent Bot**.
@@ -78,8 +76,6 @@
     ```
     (Use `docker-compose up` without `-d` to see logs in the foreground).
 
-
 ## Utility Scripts
 
 The `notebooks/setup_chatwoot_config.ipynb` Jupyter notebook provides an example of how to programmatically set up Chatwoot custom attributes and commands using the API. This requires admin privileges for your Chatwoot API key.
-
