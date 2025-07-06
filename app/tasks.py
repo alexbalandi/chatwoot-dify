@@ -229,6 +229,23 @@ def process_message_with_dify(
             return result  # Return successful result (contains first message answer)
 
     except httpx.HTTPStatusError as e:
+        # first handle internal server error with retrying celery task
+        if e.response.status_code == 500:
+            logger.warning(
+                f"Dify 500 (Internal Server Error) for chatwoot_conversation_id={chatwoot_conversation_id}. "
+                f"Retrying task (attempt {self.request.retries + 1}/{self.max_retries})..."
+            )
+            try:
+                # Use Celery's retry mechanism with countdown
+                self.retry(exc=e, countdown=config.CELERY_RETRY_COUNTDOWN)  # Use configured countdown
+            except self.MaxRetriesExceededError:
+                logger.error(
+                    f"Max retries exceeded for Dify 500 on conversation {chatwoot_conversation_id}. Failing task.",
+                    exc_info=True,
+                )
+                # Fall through to generic error handling (set status to open, etc.)
+
+        # then handle 404 errors
         # Specific retry logic for 404 ONLY when a conversation ID WAS provided
         if e.response.status_code == 404 and dify_conversation_id:
             logger.warning(
@@ -252,6 +269,7 @@ def process_message_with_dify(
                 exc_info=True,
             )
             # Fall through to generic error handling
+        
         # Log other HTTP errors before falling through
         elif isinstance(e, httpx.HTTPStatusError):
             logger.error(

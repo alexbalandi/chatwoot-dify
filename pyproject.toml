@@ -15,6 +15,7 @@ dependencies = [
     "redis>=5.2.1",
     "asyncpg>=0.30.0",
     "sentry-sdk[fastapi,celery,sqlalchemy,httpx]>=2.24.0",
+    "requests>=2.32.4",
 ]
 
 [dependency-groups]
