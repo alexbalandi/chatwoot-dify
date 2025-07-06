@@ -44,6 +44,19 @@ class ChatwootHandler:
         self.account_url = f"{self.api_url}/accounts/{self.account_id}"
         self.conversations_url = f"{self.account_url}/conversations"
 
+    async def get_conversation_messages(self, conversation_id: int) -> List[Dict[str, Any]]:
+        """Get all messages for a specific conversation."""
+        url = f"{self.conversations_url}/{conversation_id}/messages"
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, headers=self.headers)
+                response.raise_for_status()
+                # The messages are in the 'payload' key
+                return response.json().get("payload", [])
+        except Exception as e:
+            logger.error(f"Failed to get messages for conversation {conversation_id}: {e}")
+            return []
+
     def send_message_sync(self, conversation_id: int, message: str, private: bool = False):
         """Synchronous version of send_message for use in Celery tasks"""
         import httpx

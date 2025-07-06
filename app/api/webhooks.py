@@ -336,30 +336,39 @@ async def get_chatwoot_conversation_id(
     return ConversationResponse.model_validate(conversation, from_attributes=True)
 
 
-@router.get("/conversation-info/{chatwoot_conversation_id}")
-@handle_api_errors("get conversation info")
+@router.get("/get-bridge-conversation-info/{chatwoot_conversation_id}")
+@handle_api_errors("get bridge conversation info")
 async def get_conversation_info(
     chatwoot_conversation_id: int, db: AsyncSession = Depends(get_session)
 ) -> ConversationResponse:
-    """Get conversation information using optimized query and proper response serialization."""
+    """
+    Get conversation info from the bridge database by Chatwoot conversation ID.
+    """
     statement = select(Conversation).where(Conversation.chatwoot_conversation_id == str(chatwoot_conversation_id))
     result = await db.execute(statement)
     conversation = result.scalar_one_or_none()
-
     if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise HTTPException(status_code=404, detail="Conversation not found in bridge database")
+    return conversation
 
-    # Use Pydantic v2 model_validate with from_attributes for proper serialization
-    return ConversationResponse.model_validate(conversation, from_attributes=True)
+
+@router.get("/chatwoot-messages/{conversation_id}")
+@handle_api_errors("get chatwoot messages")
+async def get_chatwoot_messages(conversation_id: int) -> List[Dict[str, Any]]:
+    """
+    Get all messages for a specific conversation directly from Chatwoot.
+    """
+    messages = await chatwoot.get_conversation_messages(conversation_id=conversation_id)
+    return messages
 
 
 async def update_team_cache():
-    """Update the team name to ID mapping cache."""
+    """Update team cache from Chatwoot API if caching is enabled."""
+    global team_cache, last_update_time
+
     if not ENABLE_TEAM_CACHE:
         logger.warning("Team caching is disabled. Skipping cache update.")
         return {}
-
-    global team_cache, last_update_time
 
     async with team_cache_lock:
         try:
